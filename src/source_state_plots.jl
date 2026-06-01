@@ -58,7 +58,7 @@ function plot_source_state_waveforms(item; dt, velocity_range, period_min, perio
 
     distance_label = isnothing(item.distance) ? "distance unavailable" : "$(round(Int, item.distance))km"
     title = "Source State Average Waveforms ($(item.pair_label) seed=$(item.seed) $(distance_label) $(_compact_number(period_min))-$(_compact_number(period_max))s)"
-    return PlutoPlotly.plot(traces, PlutoPlotly.Layout(
+    return _plotly_plot(traces, PlutoPlotly.Layout(
         title=attr(text=title, font=attr(size=18, family="Computer Modern, serif")),
         height=500 * max(1, cld(ncomb, 5)),
         width=900,
@@ -93,7 +93,7 @@ function plot_cluster_histogram(counts_ac, counts_c; title="Cluster Usage", labe
         yaxis=attr(title="Usage (%)"),
         plot_bgcolor="white", paper_bgcolor="white",
     )
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 # ╔═╡ a1000007-0000-0000-0000-000000000001
@@ -144,5 +144,5 @@ function plot_state_ncc_heatmap(acausal::AbstractMatrix, causal::AbstractMatrix;
         plot_bgcolor="white", paper_bgcolor="white",
         margin=attr(t=80, b=80, l=80, r=80),
     )
-    return PlutoPlotly.plot([trace_ac, trace_c], layout)
+    return _plotly_plot([trace_ac, trace_c], layout)
 end

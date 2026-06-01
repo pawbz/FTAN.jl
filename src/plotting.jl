@@ -1,3 +1,7 @@
+_plotly_traces(traces::AbstractVector) = AbstractTrace[trace for trace in traces]
+_plotly_plot(traces::AbstractVector, layout; kwargs...) =
+    PlutoPlotly.plot(_plotly_traces(traces), layout; kwargs...)
+
 function plot_envelopes(res;
                   colorscale="Reds",
                   width=800,
@@ -143,7 +147,7 @@ function plot_envelopes(res;
         end
     end
     
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 # ╔═╡ df761225-7a00-4a7c-b56f-611243a75e97
@@ -247,7 +251,7 @@ function plot_dispersion_curve(results::AbstractVector{MFTResult};
         push!(traces, group_trace)
     end
 
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 # ╔═╡ ee08ecac-5010-4a64-820e-43ee80823939
@@ -380,7 +384,7 @@ function plot_dispersion_curve(res::MFTResult;
         end
     end
 
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 # ╔═╡ 3bab4eab-92da-4539-b3df-d5c637d1ce77
@@ -418,7 +422,7 @@ function plot_crosscorr_bundle(result; title="Cross-Correlations")
         plot_bgcolor = "white"
     )
     
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 function compute_velocity_error_metrics(res::MFTResult,
@@ -563,7 +567,7 @@ function plot_phase_velocities(res::MFTResult;
         end
     end
 
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 function plot_multipeak_dispersion(modes::Vector{MultimodalDispersion}; 
@@ -694,7 +698,7 @@ function plot_multipeak_dispersion(modes::Vector{MultimodalDispersion};
         )
     )
     
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 function plot_branch_comparison(result::BranchAnalysisResult; 
@@ -804,7 +808,7 @@ function plot_branch_comparison(result::BranchAnalysisResult;
         legend=attr(x=1.02, y=1.0, font=attr(size=font_size-2))
     )
     
-    return PlutoPlotly.plot(all_traces, layout)
+    return _plotly_plot(all_traces, layout)
 end
 
 # ╔═╡ 4c915e4e-3cdc-11f1-9235-33f20a13a658
@@ -893,7 +897,7 @@ function plot_branch_correlation(result::BranchAnalysisResult;
                    bgcolor="rgba(255,255,255,0.8)", borderwidth=1)
     )
     
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 function plot_phase_regression_fit(fit::PhaseVelocityPeriodFit;
@@ -928,7 +932,7 @@ function plot_phase_regression_fit(fit::PhaseVelocityPeriodFit;
             line=attr(color="black", width=2.5),
         ),
     ]
-    return PlutoPlotly.plot(traces, Layout(
+    return _plotly_plot(traces, Layout(
         title=title,
         xaxis=attr(title="Distance d (km)"),
         yaxis=attr(title="Unwrapped phase Φ (rad)"),
@@ -1025,7 +1029,7 @@ function plot_branch_correlation(result::BranchBatchAnalysisResult;
         legend = attr(x = 1.02, y = 1.0, font = attr(size = font_size - 2), bgcolor = "rgba(255,255,255,0.8)", borderwidth = 1)
     )
 
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 function plot_all_highcorr_groupvelocity_picks(result::BranchAnalysisResult;
@@ -1164,7 +1168,7 @@ function plot_all_highcorr_groupvelocity_picks(result::BranchAnalysisResult;
         legend=attr(x=1.02, y=1.0, font=attr(size=font_size - 2), bgcolor="rgba(255,255,255,0.8)", borderwidth=1)
     )
 
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 # ╔═╡ 58d6ecb6-2c42-4a53-9cbc-b72ebf48356c
@@ -1398,7 +1402,7 @@ function plot_all_highcorr_groupvelocity_picks(result::BranchBatchAnalysisResult
         legend=attr(x=1.02, y=1.0, font=attr(size=font_size - 2), bgcolor="rgba(255,255,255,0.8)", borderwidth=1)
     )
 
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 function _resolve_period_index(periods::AbstractVector{<:Real};
@@ -1541,7 +1545,7 @@ function plot_filtered_traces_by_period(result::BranchBatchAnalysisResult;
         legend=attr(x=1.02, y=1.0, font=attr(size=font_size - 2), bgcolor="rgba(255,255,255,0.85)", borderwidth=1)
     )
 
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
 
 function _uc_consistency_rows_from_mft_result(res::MFTResult;
@@ -1714,7 +1718,7 @@ function plot_uc_consistency_comparison(rows;
         (isempty(all_vels) ? nothing : [0.9 * minimum(all_vels), 1.1 * maximum(all_vels)]) :
         [Float64(velocity_range[1]), Float64(velocity_range[2])]
     title_pair = isnothing(pair_label) ? "" : ": $(pair_label)"
-    PlutoPlotly.plot(traces, Layout(
+    _plotly_plot(traces, Layout(
         title="$(title)$(title_pair)$(overlay_title)",
         xaxis=attr(type="log", domain=[0.0, 0.86], anchor="y",
             showticklabels=false, showgrid=true, gridcolor="rgba(0,0,0,0.10)", zeroline=false),
@@ -1825,5 +1829,5 @@ function plot_group_phase_consistency(res::MFTResult;
         margin=attr(l=80, r=100, t=80, b=80),
         showlegend=true
     )
-    return PlutoPlotly.plot(traces, layout)
+    return _plotly_plot(traces, layout)
 end
