@@ -8,7 +8,9 @@ using InteractiveUtils
 begin
     import Pkg
     Pkg.activate(joinpath(@__DIR__, ".."))
-    using FTAN
+	Pkg.instantiate()
+	Pkg.add("Revise")
+    using Revise, FTAN
 end
 
 # ╔═╡ 22222222-4444-2222-2222-222222222222
