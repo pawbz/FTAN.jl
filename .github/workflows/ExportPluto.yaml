@@ -1,0 +1,45 @@
+name: Export Pluto notebooks
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: '1.12'
+
+      - uses: julia-actions/cache@v2
+
+      - name: Instantiate package
+        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+      - name: Export Pluto notebooks
+        run: |
+          julia --project=. -e '
+            using Pkg
+            Pkg.add(["Pluto", "PlutoSliderServer"])
+            import PlutoSliderServer
+            PlutoSliderServer.github_action("pluto_notebooks";
+              Export_cache_dir="pluto_state_cache",
+              Export_baked_notebookfile=false,
+              Export_baked_state=false)
+          '
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: ./pluto_notebooks
