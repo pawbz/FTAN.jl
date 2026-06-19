@@ -61,3 +61,79 @@ function _ncc(a, b)
     b0 = Float64.(vec(b)) .- mean(b)
     return dot(a0, b0) / ((norm(a0) * norm(b0)) + 1e-8)
 end
+
+"""
+    wavelength_valid_period(period, distance; wavelength_ref_velocity=nothing,
+                            wavelength_fraction=nothing)
+
+Return whether `period` passes the optional distance-dependent wavelength filter.
+`wavelength_fraction` is the minimum number of wavelengths (at
+`wavelength_ref_velocity`) that must fit within `distance` for the period to
+be considered valid. When filtering is requested, keep periods satisfying
+`wavelength_fraction * wavelength_ref_velocity * period < distance` (i.e.
+`distance > wavelength_fraction` wavelengths).
+"""
+function wavelength_valid_period(period::Real, distance::Real;
+                                 wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+                                 wavelength_fraction::Union{Nothing,Real}=nothing)
+    isnothing(wavelength_ref_velocity) && isnothing(wavelength_fraction) && return true
+    (isnothing(wavelength_ref_velocity) || isnothing(wavelength_fraction)) && return false
+
+    period = Float64(period)
+    distance = Float64(distance)
+    ref_velocity = Float64(wavelength_ref_velocity)
+    fraction = Float64(wavelength_fraction)
+    all(isfinite, (period, distance, ref_velocity, fraction)) || return false
+    (period > 0.0 && distance > 0.0 && ref_velocity > 0.0 && fraction > 0.0) || return false
+    return fraction * ref_velocity * period < distance
+end
+
+function _wavelength_valid_indices(periods::AbstractVector{<:Real}, distance::Real;
+                                   wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+                                   wavelength_fraction::Union{Nothing,Real}=nothing)
+    return findall(period -> wavelength_valid_period(period, distance;
+                                                     wavelength_ref_velocity=wavelength_ref_velocity,
+                                                     wavelength_fraction=wavelength_fraction),
+                   periods)
+end
+
+const EARTH_RADIUS_KM = 6371.0
+
+"""
+    haversine_distance_km(lat1, lon1, lat2, lon2) -> Float64
+
+Great-circle distance [km] between two lat/lon points [degrees] using the
+haversine formula and a spherical Earth radius of 6371 km.
+"""
+function haversine_distance_km(lat1::Real, lon1::Real, lat2::Real, lon2::Real)
+    φ1, φ2 = deg2rad(lat1), deg2rad(lat2)
+    Δφ, Δλ = deg2rad(lat2 - lat1), deg2rad(lon2 - lon1)
+    a = sin(Δφ / 2)^2 + cos(φ1) * cos(φ2) * sin(Δλ / 2)^2
+    return 2 * EARTH_RADIUS_KM * asin(min(1.0, sqrt(a)))
+end
+
+"""
+    linear_array_order(station_coords::Dict{String,Tuple{Float64,Float64}}) -> Vector{String}
+
+Order station codes along a roughly-linear array's principal axis: project
+centered (lat, lon) positions onto the first principal component of their
+2x2 covariance matrix, then sort by that projected coordinate.
+"""
+function linear_array_order(station_coords::Dict{String,Tuple{Float64,Float64}})
+    codes = collect(keys(station_coords))
+    isempty(codes) && return String[]
+    length(codes) == 1 && return codes
+
+    lats = [station_coords[c][1] for c in codes]
+    lons = [station_coords[c][2] for c in codes]
+    lat0, lon0 = mean(lats), mean(lons)
+    X = hcat(lats .- lat0, lons .- lon0)  # (n x 2)
+
+    cov = X' * X
+    evals, evecs = eigen(Symmetric(cov))
+    axis = evecs[:, argmax(evals)]  # principal direction (2-vector)
+
+    proj = X * axis
+    order = sortperm(proj)
+    return codes[order]
+end

@@ -103,6 +103,99 @@ begin
         return true
     end
 
+    # Single propagation step: given an already-resolved period at idx_prev,
+    # resolve idx_curr's cycle number/velocity from the group-velocity-predicted
+    # continuation (pyaftan-style). Direction-agnostic — idx_prev may be at a
+    # longer or shorter period than idx_curr. Mutates
+    # phase_velocities/selected_phase_branches/phase_suspect[idx_curr] in place.
+    function _phtovel_propagate_step!(phase_velocities::Vector{Float64},
+                                      selected_phase_branches::Vector{Int},
+                                      phase_suspect::AbstractVector{Bool},
+                                      measured_phases::Vector{Float64},
+                                      frequencies::Vector{Float64},
+                                      arrival_times::Vector{Float64},
+                                      dist::Float64,
+                                      phvel_source_phase::Float64,
+                                      idx_curr::Int,
+                                      idx_prev::Int;
+                                      phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5),
+                                      phase_smoothness_jump::Float64=0.05,
+                                      phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0))
+        t_g_curr = arrival_times[idx_curr]
+        t_g_prev = arrival_times[idx_prev]
+        phi_curr = measured_phases[idx_curr]
+        omega_curr = 2π * frequencies[idx_curr]
+        omega_prev = 2π * frequencies[idx_prev]
+
+        v_prev = phase_velocities[idx_prev]
+        if !isfinite(v_prev)
+            phase_suspect[idx_curr] = true
+            return phase_velocities
+        end
+
+        # Group velocities from arrival times
+        u_curr = dist / t_g_curr
+        u_prev = dist / t_g_prev
+
+        denom_pred = (1.0 / u_curr + 1.0 / u_prev) * (omega_curr - omega_prev) / 2.0 + omega_prev / v_prev
+        if abs(denom_pred) <= 1e-6
+            phase_suspect[idx_curr] = true
+            return phase_velocities
+        end
+        vpred_curr = omega_curr / denom_pred
+
+        # Unwrap phase using predicted velocity
+        phpred_curr = omega_curr * (t_g_curr - dist / vpred_curr)
+        k_curr = round(Int, (phpred_curr - phi_curr) / (2π))
+
+        denom_curr = t_g_curr - (phi_curr + 2π * k_curr + phvel_source_phase) / omega_curr
+        if abs(denom_curr) <= 1e-6
+            phase_suspect[idx_curr] = true
+            return phase_velocities
+        end
+        v_curr = dist / denom_curr
+        selected_phase_branches[idx_curr] = k_curr
+        jumpy = abs(v_curr - v_prev) / max(abs(v_prev), eps(Float64)) > phase_smoothness_jump
+        if _accept_phtovel_velocity(v_curr, phase_velocity_range, phase_plausible_range)
+            phase_velocities[idx_curr] = v_curr
+            phase_suspect[idx_curr] = jumpy
+        else
+            phase_suspect[idx_curr] = true
+        end
+        return phase_velocities
+    end
+
+    # Shared inward-propagation loop: given an already-resolved starting point
+    # (idx_long, k_long, v_long) at the longest valid period, walk toward
+    # shorter periods predicting each step's phase velocity from the previous
+    # step's group-velocity relationship (pyaftan-style). Mutates
+    # phase_velocities/selected_phase_branches/phase_suspect in place for all
+    # of `sorted` except idx_long itself (assumed already set by the caller).
+    function _phtovel_propagate_inward!(phase_velocities::Vector{Float64},
+                                        selected_phase_branches::Vector{Int},
+                                        phase_suspect::AbstractVector{Bool},
+                                        measured_phases::Vector{Float64},
+                                        frequencies::Vector{Float64},
+                                        arrival_times::Vector{Float64},
+                                        dist::Float64,
+                                        phvel_source_phase::Float64,
+                                        sorted::Vector{Int},
+                                        idx_long::Int;
+                                        phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5),
+                                        phase_smoothness_jump::Float64=0.05,
+                                        phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0))
+        long_pos = findfirst(==(idx_long), sorted)
+        for pos in (long_pos - 1):-1:1
+            _phtovel_propagate_step!(phase_velocities, selected_phase_branches,
+                phase_suspect, measured_phases, frequencies, arrival_times, dist,
+                phvel_source_phase, sorted[pos], sorted[pos + 1];
+                phase_velocity_range=phase_velocity_range,
+                phase_smoothness_jump=phase_smoothness_jump,
+                phase_plausible_range=phase_plausible_range)
+        end
+        return phase_velocities
+    end
+
     # pyaftan-style phase unwrapping using group-velocity-based prediction.
     function _phtovel_unwrap_phase_to_velocity!(phase_velocities::Vector{Float64},
                                                 selected_phase_branches::Vector{Int},
@@ -123,14 +216,14 @@ begin
         fill!(selected_phase_branches, 0)
         fill!(phase_suspect, false)
         dist = Float64(distance)
-        
+
         # Find valid periods with both group time and measured phase
         valid = findall(i -> isfinite(periods[i]) && isfinite(arrival_times[i]) && isfinite(measured_phases[i]) && arrival_times[i] > 0.0 && periods[i] > 0.0, eachindex(periods))
         isempty(valid) && return phase_velocities
-        
+
         # Sort by period (ascending)
         sorted = valid[sortperm(periods[valid])]
-        
+
         # Start from longest period and unwrap downward.
         idx_long = sorted[end]
         t_g_long = arrival_times[idx_long]
@@ -154,53 +247,14 @@ begin
             phase_suspect[idx_long] = true
             return phase_velocities
         end
-        
+
         # Propagate from longest to shortest period (descending index order)
-        for pos in (length(sorted) - 1):-1:1
-            idx_curr = sorted[pos]
-            idx_prev = sorted[pos + 1]
-            
-            t_g_curr = arrival_times[idx_curr]
-            t_g_prev = arrival_times[idx_prev]
-            phi_curr = measured_phases[idx_curr]
-            omega_curr = 2π * frequencies[idx_curr]
-            omega_prev = 2π * frequencies[idx_prev]
-            
-            v_prev = phase_velocities[idx_prev]
-            isfinite(v_prev) || (phase_suspect[idx_curr] = true; continue)
-            
-            # Group velocities from arrival times
-            u_curr = dist / t_g_curr
-            u_prev = dist / t_g_prev
-            
-            denom_pred = (1.0 / u_curr + 1.0 / u_prev) * (omega_curr - omega_prev) / 2.0 + omega_prev / v_prev
-            if abs(denom_pred) <= 1e-6
-                phase_suspect[idx_curr] = true
-                continue
-            end
-            vpred_curr = omega_curr / denom_pred
-            
-            # Unwrap phase using predicted velocity
-            phpred_curr = omega_curr * (t_g_curr - dist / vpred_curr)
-            k_curr = round(Int, (phpred_curr - phi_curr) / (2π))
-            
-            denom_curr = t_g_curr - (phi_curr + 2π * k_curr + phvel_source_phase) / omega_curr
-            if abs(denom_curr) <= 1e-6
-                phase_suspect[idx_curr] = true
-                continue
-            end
-            v_curr = dist / denom_curr
-            selected_phase_branches[idx_curr] = k_curr
-            jumpy = abs(v_curr - v_prev) / max(abs(v_prev), eps(Float64)) > phase_smoothness_jump
-            if _accept_phtovel_velocity(v_curr, phase_velocity_range, phase_plausible_range)
-                phase_velocities[idx_curr] = v_curr
-                phase_suspect[idx_curr] = jumpy
-            else
-                phase_suspect[idx_curr] = true
-            end
-        end
-        
-        return phase_velocities
+        return _phtovel_propagate_inward!(phase_velocities, selected_phase_branches,
+            phase_suspect, measured_phases, frequencies, arrival_times, dist,
+            phvel_source_phase, sorted, idx_long;
+            phase_velocity_range=phase_velocity_range,
+            phase_smoothness_jump=phase_smoothness_jump,
+            phase_plausible_range=phase_plausible_range)
     end
     
     function finish_phase_velocity_picks_phtovel!(phase_velocities::Vector{Float64},
@@ -230,291 +284,73 @@ begin
                                            phtovel_prior_periods=phtovel_prior_periods,
                                            phtovel_prior_velocities=phtovel_prior_velocities)
         u_predicted_from_phase .= compute_group_velocity_from_phase(periods, phase_velocities)
-        
+
         return phase_velocities
     end
+
 end
 
-begin
-    _wrap_pi(x::Real) = mod(Float64(x) + π, 2π) - π
-
-    function _circular_mean_pair(phi1::Real, phi2::Real, w1::Real, w2::Real)
-        z = Float64(w1) * cis(Float64(phi1)) + Float64(w2) * cis(Float64(phi2))
-        abs(z) <= eps(Float64) && return NaN
-        return angle(z)
-    end
-
-    function _sigma_phi_from_quality(quality::Real; floor::Float64=0.05, cap::Float64=π)
-        q = Float64(quality)
-        isfinite(q) && q > 0 || return cap
-        return clamp(1.0 / q, floor, cap)
-    end
-
-    function folded_path_azimuth_deg(lat1::Real, lon1::Real, lat2::Real, lon2::Real)
-        vals = Float64.((lat1, lon1, lat2, lon2))
-        all(isfinite, vals) || return NaN
-        φ1, φ2 = deg2rad(vals[1]), deg2rad(vals[3])
-        Δλ = deg2rad(vals[4] - vals[2])
-        y = sin(Δλ) * cos(φ2)
-        x = cos(φ1) * sin(φ2) - sin(φ1) * cos(φ2) * cos(Δλ)
-        az = mod(rad2deg(atan(y, x)), 360.0)
-        return az >= 180.0 ? az - 180.0 : az
-    end
+function _parse_pair_label(label::AbstractString)
+    parts = split(label, "-")
+    length(parts) == 2 || throw(ArgumentError("Cannot parse pair label: $(label)"))
+    return (String(parts[1]), String(parts[2]))
 end
 
-# ╔═╡ a2000005-0000-0000-0000-000000000001
-function phase_regression_observations(branch_results_by_pair;
-        branch_policy::Symbol=:symmetric_average,
-        sigma_phi=nothing,
-        sigma_from_quality::Bool=true,
-        sigma_phi_floor::Float64=0.05,
-        sigma_phi_cap::Float64=π,
-        phvel_source_phase::Float64=π / 4,
-        pair_azimuths=Dict{String,Float64}(),
-        min_quality::Float64=0.0)
-    branch_policy == :symmetric_average ||
-        throw(ArgumentError("Only branch_policy=:symmetric_average is implemented"))
+"""
+    pdsurftomo_dispersion_rows(per_pair_velocities::Dict{String,Vector{Float64}},
+        mft_results_by_pair::Dict{String,MFTResult},
+        station_coords::Dict{String,Tuple{Float64,Float64}};
+        wavelength_ref_velocity=nothing, wavelength_fraction=nothing)
+        -> Vector{NamedTuple}
 
-    rows = PhaseRegressionObservation[]
-    for pair_key in sort(collect(keys(branch_results_by_pair)); by=string)
-        pair_label = String(pair_key)
-        result = branch_results_by_pair[pair_key]
-        result isa BranchAnalysisResult || continue
-        az = get(pair_azimuths, pair_label, NaN)
-        for ip in eachindex(result.periods)
-            c = result.causal_result
-            a = result.acausal_result
-            period = Float64(result.periods[ip])
-            freq = 1.0 / period
-            omega = 2π * freq
-            t_c, t_a = c.arrival_times[ip], a.arrival_times[ip]
-            phi_c, phi_a = c.measured_phases[ip], a.measured_phases[ip]
-            q_c, q_a = c.quality_factors[ip], a.quality_factors[ip]
-            all(isfinite, (period, t_c, t_a, phi_c, phi_a, q_c, q_a)) || continue
-            (period > 0.0 && t_c > 0.0 && t_a > 0.0 && q_c >= min_quality && q_a >= min_quality) || continue
-
-            wc = max(Float64(q_c), eps(Float64))
-            wa = max(Float64(q_a), eps(Float64))
-            t_peak = (wc * Float64(t_c) + wa * Float64(t_a)) / (wc + wa)
-            phi_meas = _circular_mean_pair(phi_c, phi_a, wc, wa)
-            isfinite(phi_meas) || continue
-            quality = 0.5 * (Float64(q_c) + Float64(q_a))
-            sigma = if !isnothing(sigma_phi)
-                sigma_phi isa Function ? Float64(sigma_phi(pair_label, period)) : Float64(sigma_phi)
-            elseif sigma_from_quality
-                _sigma_phi_from_quality(quality; floor=sigma_phi_floor, cap=sigma_phi_cap)
-            else
-                sigma_phi_cap
-            end
-            isfinite(sigma) && sigma > 0.0 || continue
-            base_phase = omega * t_peak - phi_meas - phvel_source_phase
-            push!(rows, PhaseRegressionObservation(
-                pair_label, period, freq, omega, Float64(result.distance),
-                t_peak, phi_meas, base_phase, sigma, quality, Float64(az)))
+Build flat dispersion rows `(period, lat1, lon1, lat2, lon2, velocity)` for
+`write_pdsurftomo_dispersion`/pDSurfTomo, from any per-pair velocity vectors
+aligned to each pair's `MFTResult.periods`. `lat1,lon1`/`lat2,lon2` follow the
+pair label's station order (`"STA1-STA2"`). NaN velocities are skipped. If both
+`wavelength_ref_velocity` and `wavelength_fraction` are given, periods failing
+`wavelength_valid_period` (using that pair's `MFTResult.distance`) are skipped.
+"""
+function pdsurftomo_dispersion_rows(per_pair_velocities::Dict{String,Vector{Float64}},
+        mft_results_by_pair::Dict{String,MFTResult},
+        station_coords::Dict{String,Tuple{Float64,Float64}};
+        wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+        wavelength_fraction::Union{Nothing,Real}=nothing)
+    rows = NamedTuple[]
+    for (pair_label, velocities) in per_pair_velocities
+        sta, stb = _parse_pair_label(pair_label)
+        (haskey(station_coords, sta) && haskey(station_coords, stb)) || continue
+        lat1, lon1 = station_coords[sta]
+        lat2, lon2 = station_coords[stb]
+        res = mft_results_by_pair[pair_label]
+        for ip in eachindex(res.periods)
+            period = Float64(res.periods[ip])
+            v = velocities[ip]
+            isfinite(v) && v > 0 || continue
+            wavelength_valid_period(period, res.distance;
+                wavelength_ref_velocity=wavelength_ref_velocity,
+                wavelength_fraction=wavelength_fraction) || continue
+            push!(rows, (; period, lat1, lon1, lat2, lon2, velocity=v))
         end
     end
+    sort!(rows, by=r -> (r.period, r.lat1, r.lon1))
     return rows
 end
 
-# ╔═╡ a2000006-0000-0000-0000-000000000001
-begin
-    function _phase_cycles_for_slope(obs::Vector{PhaseRegressionObservation}, slope::Float64)
-        [round(Int, (slope * o.distance - o.base_phase) / (2π)) for o in obs]
-    end
+"""
+    write_pdsurftomo_dispersion(path::AbstractString, rows) -> String
 
-    _phase_unwrapped(obs::Vector{PhaseRegressionObservation}, cycles::Vector{Int}) =
-        [obs[i].base_phase + 2π * cycles[i] for i in eachindex(obs)]
-
-    _phase_weights(obs::Vector{PhaseRegressionObservation}) =
-        [1.0 / max(o.sigma_phi^2, eps(Float64)) for o in obs]
-
-    function _weighted_origin_slope(distances, phases, weights)
-        den = sum(weights[i] * distances[i]^2 for i in eachindex(distances))
-        den > 0 || return NaN
-        return sum(weights[i] * distances[i] * phases[i] for i in eachindex(distances)) / den
-    end
-
-    function _robust_scale(xs)
-        vals = [abs(Float64(x)) for x in xs if isfinite(x)]
-        isempty(vals) && return NaN
-        med = median(vals)
-        mad = median(abs.(vals .- med))
-        return max(1.4826 * mad, median(vals), eps(Float64))
-    end
-
-    function _candidate_slopes(obs::Vector{PhaseRegressionObservation}, period::Float64;
-            velocity_range::Tuple{Float64,Float64},
-            cycle_range::UnitRange{Int},
-            prior_c::Union{Nothing,Real}=nothing,
-            prior_width_fraction::Float64=0.20,
-            max_candidates::Int=400)
-        vmin, vmax = velocity_range
-        omega = 2π / period
-        slopes = Float64[omega / vmax, omega / vmin]
-        if !isnothing(prior_c) && isfinite(Float64(prior_c)) && Float64(prior_c) > 0
-            cp = Float64(prior_c)
-            append!(slopes, omega ./ [cp, cp * (1 - prior_width_fraction), cp * (1 + prior_width_fraction)])
+Write flat dispersion rows (`period, lat1, lon1, lat2, lon2, velocity`) to a
+whitespace-separated text file with no header — the input format
+`pDSurfTomo_v1.jl` reads directly (Section 1, "Flat dispersion file").
+"""
+function write_pdsurftomo_dispersion(path::AbstractString, rows)
+    mkpath(dirname(path))
+    open(path, "w") do io
+        for row in rows
+            @printf(io, "%.8g %.8f %.8f %.8f %.8f %.8f\n",
+                Float64(row.period), Float64(row.lat1), Float64(row.lon1),
+                Float64(row.lat2), Float64(row.lon2), Float64(row.velocity))
         end
-        for o in obs
-            o.distance > 0 || continue
-            for n in cycle_range
-                phi = o.base_phase + 2π * n
-                phi > 0 || continue
-                slope = phi / o.distance
-                c = omega / slope
-                vmin <= c <= vmax && push!(slopes, slope)
-            end
-        end
-        slopes = sort(unique(round.(filter(isfinite, slopes); digits=10)))
-        if length(slopes) <= max_candidates
-            return slopes
-        end
-        step = max(1, floor(Int, length(slopes) / max_candidates))
-        return slopes[1:step:end][1:min(max_candidates, length(slopes[1:step:end]))]
     end
+    return path
 end
-
-# ╔═╡ a2000007-0000-0000-0000-000000000001
-function fit_phase_velocity_period(observations::AbstractVector{PhaseRegressionObservation},
-        period::Real;
-        prior_c::Union{Nothing,Real}=nothing,
-        velocity_range::Tuple{Float64,Float64}=(2.5, 4.5),
-        cycle_range::UnitRange{Int}=-80:80,
-        ransac_tolerance::Float64=2.5,
-        min_inliers::Int=4,
-        max_refit_iterations::Int=4,
-        phvel_source_phase::Float64=π / 4,
-        azimuth_rejection::Bool=true,
-        azimuth_bin_width::Float64=20.0,
-        azimuth_threshold::Float64=2.5,
-        prior_penalty::Float64=0.05)
-    obs = [o for o in observations if isfinite(o.period) && isapprox(o.period, Float64(period); rtol=1e-8, atol=1e-8)]
-    isempty(obs) && return PhaseVelocityPeriodFit(Float64(period), 1.0 / Float64(period), 2π / Float64(period),
-        NaN, NaN, NaN, NaN, PhaseRegressionObservation[], Int[], Float64[], Float64[], Bool[], Bool[], Float64[],
-        isnothing(prior_c) ? NaN : Float64(prior_c), -Inf)
-
-    omega = 2π / Float64(period)
-    weights = _phase_weights(obs)
-    distances = [o.distance for o in obs]
-    candidates = _candidate_slopes(obs, Float64(period);
-        velocity_range=velocity_range, cycle_range=cycle_range, prior_c=prior_c)
-
-    best = nothing
-    for slope0 in candidates
-        slope = slope0
-        cycles = _phase_cycles_for_slope(obs, slope)
-        phases = _phase_unwrapped(obs, cycles)
-        residuals = phases .- slope .* distances
-        inlier = [abs(residuals[i]) / obs[i].sigma_phi <= ransac_tolerance for i in eachindex(obs)]
-        for _ in 1:max_refit_iterations
-            count(inlier) >= 2 || break
-            inds = findall(inlier)
-            slope_new = _weighted_origin_slope(distances[inds], phases[inds], weights[inds])
-            isfinite(slope_new) || break
-            slope = slope_new
-            cycles = _phase_cycles_for_slope(obs, slope)
-            phases = _phase_unwrapped(obs, cycles)
-            residuals = phases .- slope .* distances
-            inlier = [abs(residuals[i]) / obs[i].sigma_phi <= ransac_tolerance for i in eachindex(obs)]
-        end
-        support = sum((weights[i] for i in eachindex(obs) if inlier[i]); init=0.0)
-        rss = sum((weights[i] * residuals[i]^2 for i in eachindex(obs) if inlier[i]); init=0.0)
-        prior_cost = if isnothing(prior_c) || !isfinite(Float64(prior_c))
-            0.0
-        else
-            c0 = omega / slope
-            prior_penalty * abs(c0 - Float64(prior_c)) / max(abs(Float64(prior_c)), eps(Float64))
-        end
-        score = support - rss - prior_cost
-        if isnothing(best) || score > best.score
-            best = (; score, slope, cycles, phases, residuals, inlier)
-        end
-    end
-
-    if isnothing(best)
-        best = (; score=-Inf, slope=NaN, cycles=zeros(Int, length(obs)),
-            phases=fill(NaN, length(obs)), residuals=fill(NaN, length(obs)),
-            inlier=falses(length(obs)))
-    end
-
-    azimuth_outlier = falses(length(obs))
-    inlier = copy(best.inlier)
-    slope = best.slope
-    cycles = copy(best.cycles)
-    phases = copy(best.phases)
-    residuals = copy(best.residuals)
-
-    if azimuth_rejection && count(inlier) >= min_inliers
-        finite_az = [i for i in eachindex(obs) if inlier[i] && isfinite(obs[i].azimuth_deg)]
-        if !isempty(finite_az)
-            scale = _robust_scale(residuals[finite_az] ./ [obs[i].sigma_phi for i in finite_az])
-            if isfinite(scale) && scale > 0
-                bins = Dict{Int,Vector{Int}}()
-                for i in finite_az
-                    b = floor(Int, obs[i].azimuth_deg / azimuth_bin_width)
-                    push!(get!(bins, b, Int[]), i)
-                end
-                for inds in values(bins)
-                    length(inds) < 2 && continue
-                    zmed = median(residuals[inds] ./ [obs[i].sigma_phi for i in inds])
-                    if abs(zmed) > azimuth_threshold * scale
-                        azimuth_outlier[inds] .= true
-                    end
-                end
-                inlier .&= .!azimuth_outlier
-                if count(inlier) >= 2
-                    inds = findall(inlier)
-                    slope = _weighted_origin_slope(distances[inds], phases[inds], weights[inds])
-                    cycles = _phase_cycles_for_slope(obs, slope)
-                    phases = _phase_unwrapped(obs, cycles)
-                    residuals = phases .- slope .* distances
-                    inlier = [inlier[i] && abs(residuals[i]) / obs[i].sigma_phi <= ransac_tolerance for i in eachindex(obs)]
-                end
-            end
-        end
-    end
-
-    n_in = count(inlier)
-    cfit = isfinite(slope) && slope > 0 ? omega / slope : NaN
-    if n_in >= max(min_inliers, 2) && isfinite(slope)
-        inds = findall(inlier)
-        den = sum(weights[i] * distances[i]^2 for i in inds)
-        dof = max(n_in - 1, 1)
-        wrss = sum(weights[i] * residuals[i]^2 for i in inds)
-        sigma_slope = den > 0 ? sqrt((wrss / dof) / den) : NaN
-        sigma_c = isfinite(cfit) && isfinite(sigma_slope) ? abs(omega / slope^2) * sigma_slope : NaN
-    else
-        sigma_slope = NaN
-        sigma_c = NaN
-        cfit = NaN
-    end
-
-    return PhaseVelocityPeriodFit(Float64(period), 1.0 / Float64(period), omega,
-        cfit, sigma_c, slope, sigma_slope, obs, cycles, phases, residuals,
-        collect(inlier), collect(azimuth_outlier), weights,
-        isnothing(prior_c) ? NaN : Float64(prior_c), best.score)
-end
-
-# ╔═╡ a2000008-0000-0000-0000-000000000001
-function fit_phase_velocity_curve(observations::AbstractVector{PhaseRegressionObservation};
-        period_order::Symbol=:descending,
-        warm_start::Bool=true,
-        kwargs...)
-    periods = sort(unique(o.period for o in observations), rev=(period_order == :descending))
-    fits = PhaseVelocityPeriodFit[]
-    prior = nothing
-    for period in periods
-        fit = fit_phase_velocity_period(observations, period; prior_c=warm_start ? prior : nothing, kwargs...)
-        push!(fits, fit)
-        if isfinite(fit.phase_velocity) && fit.phase_velocity > 0
-            prior = fit.phase_velocity
-        end
-    end
-    return PhaseVelocityCurveFit(
-        Float64[f.period for f in fits],
-        Float64[f.phase_velocity for f in fits],
-        Float64[f.sigma_c for f in fits],
-        fits,
-    )
-end
-

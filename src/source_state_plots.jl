@@ -1,4 +1,4 @@
-function plot_source_state_waveforms(item; dt, velocity_range, period_min, period_max)
+function plot_source_state_waveforms(item; dt, velocity_range=DEFAULT_VELOCITY_RANGE, period_min, period_max)
     isnothing(item) && return PlutoPlotly.plot(PlutoPlotly.scatter(x=[0], y=[0], text=["No run selected"]))
     cluster_avg_ac = _column_normalise(item.acausal)
     cluster_avg_c = _column_normalise(item.causal)
@@ -57,17 +57,18 @@ function plot_source_state_waveforms(item; dt, velocity_range, period_min, perio
     end
 
     distance_label = isnothing(item.distance) ? "distance unavailable" : "$(round(Int, item.distance))km"
-    title = "Source State Average Waveforms ($(item.pair_label) seed=$(item.seed) $(distance_label) $(_compact_number(period_min))-$(_compact_number(period_max))s)"
+    title = "Source State Average Waveforms"
+    subtitle = "$(item.pair_label) | seed=$(item.seed) | $(distance_label) | periods=$(_compact_number(period_min))-$(_compact_number(period_max))s | velocity=$(velocity_range[1])-$(velocity_range[2]) km/s"
     return _plotly_plot(traces, PlutoPlotly.Layout(
-        title=attr(text=title, font=attr(size=18, family="Computer Modern, serif")),
+        title=_title_with_subtitle(title, subtitle; font_family="Computer Modern, serif", font_size=16),
         height=500 * max(1, cld(ncomb, 5)),
         width=900,
         xaxis=attr(title="Lag (s)", zeroline=true, zerolinecolor="rgba(0,0,0,0.3)"),
         yaxis=attr(title="Amplitude"),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        legend=attr(x=0.5, xanchor="center", y=-0.2, orientation="h",
-            font=attr(size=12, family="Computer Modern, serif")),
+        margin=_publication_margin(l=80, r=60, t=95, b=155),
+        legend=_bottom_legend(14; y=-0.22),
         shapes=shapes,
     ))
 end
@@ -87,11 +88,13 @@ function plot_cluster_histogram(counts_ac, counts_c; title="Cluster Usage", labe
             marker=attr(color="rgba(214,39,40,0.7)")),
     ]
     layout = Layout(
-        title=attr(text=title, font=attr(size=18)),
+        title=_title_with_subtitle(title, "total acausal=$(sum(counts_ac)) | total causal=$(sum(counts_c))"; font_size=15),
         barmode="group", height=400, width=700,
         xaxis=attr(title="Source state"),
         yaxis=attr(title="Usage (%)"),
         plot_bgcolor="white", paper_bgcolor="white",
+        margin=_publication_margin(l=70, r=40, t=90, b=120),
+        legend=_bottom_legend(13; y=-0.22),
     )
     return _plotly_plot(traces, layout)
 end
@@ -128,7 +131,7 @@ function plot_state_ncc_heatmap(acausal::AbstractMatrix, causal::AbstractMatrix;
     )
     sz = max(350, n * 40)
     layout = Layout(
-        title=attr(text=title, font=attr(size=16)),
+        title=_title_with_subtitle(title, "states=$(n); lower absolute correlation means more separation"; font_size=14),
         grid=attr(rows=1, columns=2, pattern="independent"),
         annotations=[
             attr(text="Acausal", x=0.22, xref="paper", y=1.05, yref="paper",
@@ -142,7 +145,7 @@ function plot_state_ncc_heatmap(acausal::AbstractMatrix, causal::AbstractMatrix;
         yaxis2=attr(title="State"),
         width=900, height=sz + 80,
         plot_bgcolor="white", paper_bgcolor="white",
-        margin=attr(t=80, b=80, l=80, r=80),
+        margin=_publication_margin(l=80, r=80, t=95, b=95),
     )
     return _plotly_plot([trace_ac, trace_c], layout)
 end

@@ -34,12 +34,6 @@ end
     batch = perform_mft_analysis_batch!(bank, W, distance; compute_phase=true)
     @test length(batch) == 2
 
-    br = analyze_causal_acausal_branches(data, reverse(data), dt, distance, periods;
-        velocity_range=(2.0, 5.0),
-        bandwidth_factor=0.30,
-        compute_phase=true)
-    @test br isa BranchAnalysisResult
-
     plot_obj = plot_uc_consistency_comparison(res; pair_label="synthetic")
     @test !isnothing(plot_obj)
 

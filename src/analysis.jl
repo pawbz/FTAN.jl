@@ -17,6 +17,8 @@ function perform_mft_analysis(data_in::AbstractVector{<:Real},
                              phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
                              phtovel_prior_periods=nothing,
                              phtovel_prior_velocities=nothing,
+                             wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+                             wavelength_fraction::Union{Nothing,Real}=nothing,
                              precision::Type{<:AbstractFloat}=Float32,
                              storage_mode::Symbol=:picks_only)
 
@@ -41,6 +43,8 @@ function perform_mft_analysis(data_in::AbstractVector{<:Real},
             phase_plausible_range=phase_plausible_range,
             phtovel_prior_periods=phtovel_prior_periods,
             phtovel_prior_velocities=phtovel_prior_velocities,
+            wavelength_ref_velocity=wavelength_ref_velocity,
+            wavelength_fraction=wavelength_fraction,
         ))
     end
 
@@ -136,6 +140,11 @@ function perform_mft_analysis(data_in::AbstractVector{<:Real},
                                      phase_velocity_range=phase_velocity_range,
                                      phase_smoothness_jump=phase_smoothness_jump,
                                      phase_plausible_range=phase_plausible_range)
+        _apply_phase_wavelength_gate!(phase_velocities, phase_velocity_branches,
+            selected_phase_branches, phase_suspect, u_predicted_from_phase,
+            periods, dist;
+            wavelength_ref_velocity=wavelength_ref_velocity,
+            wavelength_fraction=wavelength_fraction)
     end
 
     return MFTResult(periods, frequencies, group_velocities, phase_velocities,
@@ -160,6 +169,31 @@ function _require_batch_size(bank::MFTFilterBank, N::Int)
         "or use non-bang perform_mft_analysis_batch to allocate a call-local bank."
     ))
     return nothing
+end
+
+function _apply_phase_wavelength_gate!(phase_velocities::Vector{Float64},
+        phase_velocity_branches::AbstractMatrix{Float64},
+        selected_phase_branches::Vector{Int},
+        phase_suspect::AbstractVector{Bool},
+        u_predicted_from_phase::Vector{Float64},
+        periods::AbstractVector{Float64},
+        distance::Real;
+        wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+        wavelength_fraction::Union{Nothing,Real}=nothing)
+    (isnothing(wavelength_ref_velocity) || isnothing(wavelength_fraction)) && return phase_velocities
+    for ip in eachindex(periods)
+        wavelength_valid_period(periods[ip], Float64(distance);
+            wavelength_ref_velocity=wavelength_ref_velocity,
+            wavelength_fraction=wavelength_fraction) && continue
+        phase_velocities[ip] = NaN
+        selected_phase_branches[ip] = 0
+        phase_suspect[ip] = false
+        u_predicted_from_phase[ip] = NaN
+        if !isempty(phase_velocity_branches)
+            phase_velocity_branches[ip, :] .= NaN
+        end
+    end
+    return phase_velocities
 end
 
 """
@@ -194,7 +228,9 @@ function _assemble_mft_result(bank::MFTFilterBank, dist::Float64, n::Int,
                                phase_smoothness_jump::Float64=0.05,
                                phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
                                phtovel_prior_periods=nothing,
-                               phtovel_prior_velocities=nothing)
+                               phtovel_prior_velocities=nothing,
+                               wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+                               wavelength_fraction::Union{Nothing,Real}=nothing)
     nfreq = bank.nfreq
     phase_branch_numbers = copy(DEFAULT_PHASE_BRANCH_NUMBERS)
     nbranches = length(phase_branch_numbers)
@@ -259,6 +295,11 @@ function _assemble_mft_result(bank::MFTFilterBank, dist::Float64, n::Int,
                                          phase_smoothness_jump=phase_smoothness_jump,
                                          phase_plausible_range=phase_plausible_range)
         end
+        _apply_phase_wavelength_gate!(phase_velocities, phase_velocity_branches,
+            selected_phase_branches, phase_suspect, u_predicted_from_phase,
+            bank.periods, dist;
+            wavelength_ref_velocity=wavelength_ref_velocity,
+            wavelength_fraction=wavelength_fraction)
     end
 
     return MFTResult(
@@ -306,7 +347,9 @@ begin
 	                      phase_smoothness_jump::Float64=0.05,
 	                      phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
 	                      phtovel_prior_periods=nothing,
-	                      phtovel_prior_velocities=nothing)
+	                      phtovel_prior_velocities=nothing,
+	                      wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+	                      wavelength_fraction::Union{Nothing,Real}=nothing)
 	    bank.arrivals_buf[:, 1:N] .= NaN
 	    bank.phases_buf[:, 1:N]   .= NaN
 	    min_vel, max_vel = bank.velocity_range
@@ -345,7 +388,9 @@ begin
 	                                          phase_smoothness_jump=phase_smoothness_jump,
 	                                          phase_plausible_range=phase_plausible_range,
 	                                          phtovel_prior_periods=phtovel_prior_periods,
-	                                          phtovel_prior_velocities=phtovel_prior_velocities)
+	                                          phtovel_prior_velocities=phtovel_prior_velocities,
+	                                          wavelength_ref_velocity=wavelength_ref_velocity,
+	                                          wavelength_fraction=wavelength_fraction)
 	    end
 	    return results
 	end
@@ -376,7 +421,9 @@ begin
 	                                   phase_smoothness_jump::Float64=0.05,
 	                                   phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
 	                                   phtovel_prior_periods=nothing,
-	                                   phtovel_prior_velocities=nothing)
+	                                   phtovel_prior_velocities=nothing,
+	                                   wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+	                                   wavelength_fraction::Union{Nothing,Real}=nothing)
 	    res.measured_phases .= measured_phases
 	    if use_phtovel
 	        finish_phase_velocity_picks_phtovel!(res.phase_velocities, res.measured_phases,
@@ -403,6 +450,11 @@ begin
 	                                     phase_smoothness_jump=phase_smoothness_jump,
 	                                     phase_plausible_range=phase_plausible_range)
 	    end
+	    _apply_phase_wavelength_gate!(res.phase_velocities, res.phase_velocity_branches,
+	        res.selected_phase_branches, res.phase_suspect, res.u_predicted_from_phase,
+	        res.periods, res.distance;
+	        wavelength_ref_velocity=wavelength_ref_velocity,
+	        wavelength_fraction=wavelength_fraction)
 	    return res
 	end
 	
@@ -436,6 +488,8 @@ begin
 	                          phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
 	                          phtovel_prior_periods=nothing,
 	                          phtovel_prior_velocities=nothing,
+	                          wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+	                          wavelength_fraction::Union{Nothing,Real}=nothing,
 	                          correlation_pairs::Union{Nothing,Vector{Tuple{Int,Int}}}=nothing) where {T}
 	    bank.storage_mode == :picks_only ||
 	        throw(ArgumentError("_run_picks_only! requires a :picks_only MFTFilterBank"))
@@ -494,7 +548,9 @@ begin
 	                                       phase_smoothness_jump=phase_smoothness_jump,
 	                                       phase_plausible_range=phase_plausible_range,
 	                                       phtovel_prior_periods=phtovel_prior_periods,
-	                                       phtovel_prior_velocities=phtovel_prior_velocities)
+	                                       phtovel_prior_velocities=phtovel_prior_velocities,
+	                                       wavelength_ref_velocity=wavelength_ref_velocity,
+	                                       wavelength_fraction=wavelength_fraction)
 	        end
 	    end
 	    return results, correlations
@@ -536,7 +592,9 @@ function perform_mft_analysis_batch!(bank::MFTFilterBank,
                                      phase_smoothness_jump::Float64=0.05,
                                      phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
                                      phtovel_prior_periods=nothing,
-                                     phtovel_prior_velocities=nothing)
+                                     phtovel_prior_velocities=nothing,
+                                     wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+                                     wavelength_fraction::Union{Nothing,Real}=nothing)
     N = size(W, 2)
     _require_batch_size(bank, N)
     T = _bank_float_type(bank)
@@ -553,7 +611,9 @@ function perform_mft_analysis_batch!(bank::MFTFilterBank,
                                       phase_smoothness_jump=phase_smoothness_jump,
                                       phase_plausible_range=phase_plausible_range,
                                       phtovel_prior_periods=phtovel_prior_periods,
-                                      phtovel_prior_velocities=phtovel_prior_velocities)
+                                      phtovel_prior_velocities=phtovel_prior_velocities,
+                                      wavelength_ref_velocity=wavelength_ref_velocity,
+                                      wavelength_fraction=wavelength_fraction)
         return results
     end
     _run_phase1!(bank, W_flat, N)
@@ -567,7 +627,9 @@ function perform_mft_analysis_batch!(bank::MFTFilterBank,
                         phase_smoothness_jump=phase_smoothness_jump,
                         phase_plausible_range=phase_plausible_range,
                         phtovel_prior_periods=phtovel_prior_periods,
-                        phtovel_prior_velocities=phtovel_prior_velocities)
+                        phtovel_prior_velocities=phtovel_prior_velocities,
+                        wavelength_ref_velocity=wavelength_ref_velocity,
+                        wavelength_fraction=wavelength_fraction)
 end
 
 # ╔═╡ f57cbf2e-5dcb-4e0a-90a5-5f2c363990cd
@@ -584,7 +646,9 @@ function perform_mft_analysis_batch!(bank::MFTFilterBank,
                                      phase_smoothness_jump::Float64=0.05,
                                      phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
                                      phtovel_prior_periods=nothing,
-                                     phtovel_prior_velocities=nothing)
+                                     phtovel_prior_velocities=nothing,
+                                     wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+                                     wavelength_fraction::Union{Nothing,Real}=nothing)
     dims = size(W)[2:end]
     @assert size(dists) == dims "dists shape $(size(dists)) must match trailing dims of W $(dims)"
     N = prod(dims)
@@ -603,7 +667,9 @@ function perform_mft_analysis_batch!(bank::MFTFilterBank,
                                phase_smoothness_jump=phase_smoothness_jump,
                                phase_plausible_range=phase_plausible_range,
                                phtovel_prior_periods=phtovel_prior_periods,
-                               phtovel_prior_velocities=phtovel_prior_velocities))
+                               phtovel_prior_velocities=phtovel_prior_velocities,
+                               wavelength_ref_velocity=wavelength_ref_velocity,
+                               wavelength_fraction=wavelength_fraction))
     else
         _run_phase1!(bank, W_flat, N)
         _run_phase2!(bank, dists_flat, N;
@@ -616,7 +682,9 @@ function perform_mft_analysis_batch!(bank::MFTFilterBank,
                      phase_smoothness_jump=phase_smoothness_jump,
                      phase_plausible_range=phase_plausible_range,
                      phtovel_prior_periods=phtovel_prior_periods,
-                     phtovel_prior_velocities=phtovel_prior_velocities)
+                     phtovel_prior_velocities=phtovel_prior_velocities,
+                     wavelength_ref_velocity=wavelength_ref_velocity,
+                     wavelength_fraction=wavelength_fraction)
     end
     return reshape(results_flat, dims)
 end
@@ -659,7 +727,9 @@ begin
 	                                    phase_smoothness_jump::Float64=0.05,
 	                                    phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
 	                                    phtovel_prior_periods=nothing,
-	                                    phtovel_prior_velocities=nothing)
+	                                    phtovel_prior_velocities=nothing,
+	                                    wavelength_ref_velocity::Union{Nothing,Real}=nothing,
+	                                    wavelength_fraction::Union{Nothing,Real}=nothing)
 	    ndims(W) >= 2 || throw(ArgumentError("W must have shape (nt × trailing dims...)"))
 	    N = prod(size(W)[2:end])
 	    bank = MFTFilterBank(dt, size(W, 1), periods;
@@ -680,6 +750,8 @@ begin
 	                                       phase_smoothness_jump=phase_smoothness_jump,
 	                                       phase_plausible_range=phase_plausible_range,
 	                                       phtovel_prior_periods=phtovel_prior_periods,
-	                                       phtovel_prior_velocities=phtovel_prior_velocities)
+	                                       phtovel_prior_velocities=phtovel_prior_velocities,
+	                                       wavelength_ref_velocity=wavelength_ref_velocity,
+	                                       wavelength_fraction=wavelength_fraction)
 	end
 end
