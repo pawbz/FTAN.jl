@@ -48,12 +48,16 @@ end
 
 @testset "phvel_source_phase period-dependent correction" begin
     # _interp_phvel_correction: exact-match keys return the stored value;
-    # in-between periods interpolate linearly; out-of-range periods clamp.
+    # in-between periods interpolate linearly in log(period); out-of-range
+    # periods clamp flat to the nearest edge value.
     d = Dict(5.0 => -π/4, 10.0 => -π/8, 20.0 => -π/16)
     @test FTAN._interp_phvel_correction(5.0, d) ≈ -π/4
     @test FTAN._interp_phvel_correction(10.0, d) ≈ -π/8
     @test FTAN._interp_phvel_correction(20.0, d) ≈ -π/16
-    @test FTAN._interp_phvel_correction(7.5, d) ≈ (-π/4 + -π/8) / 2
+    # Geometric mean of two adjacent keys is the log-midpoint, where log
+    # interpolation gives exactly the arithmetic mean of their values.
+    @test FTAN._interp_phvel_correction(sqrt(5.0 * 10.0), d) ≈ (-π/4 + -π/8) / 2
+    @test FTAN._interp_phvel_correction(sqrt(10.0 * 20.0), d) ≈ (-π/8 + -π/16) / 2
     @test FTAN._interp_phvel_correction(1.0, d) ≈ -π/4   # clamped below range
     @test FTAN._interp_phvel_correction(100.0, d) ≈ -π/16 # clamped above range
 

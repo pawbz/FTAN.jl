@@ -1,8 +1,9 @@
 const PhvelCorrection = Union{Float64, AbstractDict{<:Real,<:Real}}
 
-# Linear interpolation of a period -> correction [rad] lookup table, with
-# clamping at the ends. Mirrors _interp_phase_velocity_prior's sort/interp
-# logic below, just sourced from a Dict instead of parallel arrays.
+# Log-period interpolation of a period -> correction [rad] lookup table
+# (linear in log(period)), with flat clamping at the ends. Mirrors
+# _interp_phase_velocity_prior's sort/interp logic below, just sourced from
+# a Dict instead of parallel arrays.
 function _interp_phvel_correction(period::Float64, correction_dict::AbstractDict{<:Real,<:Real})
     ps = Float64.(collect(keys(correction_dict)))
     vs = Float64.(collect(values(correction_dict)))
@@ -12,7 +13,7 @@ function _interp_phvel_correction(period::Float64, correction_dict::AbstractDict
     period >= ps[end] && return vs[end]
     hi = searchsortedfirst(ps, period)
     lo = hi - 1
-    w = (period - ps[lo]) / (ps[hi] - ps[lo])
+    w = (log(period) - log(ps[lo])) / (log(ps[hi]) - log(ps[lo]))
     return (1.0 - w) * vs[lo] + w * vs[hi]
 end
 
