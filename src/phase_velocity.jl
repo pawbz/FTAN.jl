@@ -1,13 +1,41 @@
+const PhvelCorrection = Union{Float64, AbstractDict{<:Real,<:Real}}
+
+# Linear interpolation of a period -> correction [rad] lookup table, with
+# clamping at the ends. Mirrors _interp_phase_velocity_prior's sort/interp
+# logic below, just sourced from a Dict instead of parallel arrays.
+function _interp_phvel_correction(period::Float64, correction_dict::AbstractDict{<:Real,<:Real})
+    ps = Float64.(collect(keys(correction_dict)))
+    vs = Float64.(collect(values(correction_dict)))
+    order = sortperm(ps)
+    ps = ps[order]; vs = vs[order]
+    period <= ps[1] && return vs[1]
+    period >= ps[end] && return vs[end]
+    hi = searchsortedfirst(ps, period)
+    lo = hi - 1
+    w = (period - ps[lo]) / (ps[hi] - ps[lo])
+    return (1.0 - w) * vs[lo] + w * vs[hi]
+end
+
+# Resolve a scalar or period->correction dict into a per-period Vector{Float64}
+# aligned with `periods`, resolved once per call rather than per period-index.
+function _phvel_correction_per_period(correction::Float64, periods::Vector{Float64})
+    return fill(correction, length(periods))
+end
+function _phvel_correction_per_period(correction::AbstractDict{<:Real,<:Real}, periods::Vector{Float64})
+    isempty(correction) && throw(ArgumentError("phvel_source_phase dict must not be empty"))
+    return Float64[_interp_phvel_correction(T, correction) for T in periods]
+end
+
 begin
     DEFAULT_PHASE_BRANCH_NUMBERS = collect(-3:3)
-    function _fill_phase_velocity_branches!(phase_velocity_branches::AbstractMatrix{Float64}, frequencies::AbstractVector{Float64}, arrival_times::AbstractVector{Float64}, measured_phases::AbstractVector{Float64}, distance::Float64, phase_branch_numbers::AbstractVector{Int}, phvel_source_phase::Float64; phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0))
+    function _fill_phase_velocity_branches!(phase_velocity_branches::AbstractMatrix{Float64}, frequencies::AbstractVector{Float64}, arrival_times::AbstractVector{Float64}, measured_phases::AbstractVector{Float64}, distance::Float64, phase_branch_numbers::AbstractVector{Int}, phvel_source_phase::Vector{Float64}; phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0))
         fill!(phase_velocity_branches, NaN); c_min, c_max = phase_plausible_range
         for i in eachindex(frequencies)
             t_g = arrival_times[i]; phi = measured_phases[i]
             (isfinite(t_g) && t_g > 0.0 && isfinite(phi)) || continue
             omega = 2π * frequencies[i]
             for (ib, branch) in enumerate(phase_branch_numbers)
-                denom = omega * t_g - phi - phvel_source_phase + 2π * branch
+                denom = omega * t_g - phi - phvel_source_phase[i] + 2π * branch
                 abs(denom) > 1e-6 || continue
                 c = omega * distance / denom
                 phase_velocity_branches[i, ib] = (c_min <= c <= c_max) ? c : NaN
@@ -68,8 +96,9 @@ begin
         end
         u_predicted_from_phase .= compute_group_velocity_from_phase(periods, phase_velocities); return phase_velocities
     end
-    function finish_phase_velocity_picks!(phase_velocities::Vector{Float64}, phase_velocity_branches::Matrix{Float64}, measured_phases::Vector{Float64}, selected_phase_branches::Vector{Int}, phase_suspect::AbstractVector{Bool}, u_predicted_from_phase::Vector{Float64}, periods::Vector{Float64}, frequencies::Vector{Float64}, arrival_times::Vector{Float64}, distance::Float64, quality_factors::Vector{Float64}, phase_branch_numbers::Vector{Int}, phvel_source_phase::Float64; min_anchor_quality::Float64=3.0, phase_anchor_velocity::Float64=3.3, phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5), phase_smoothness_jump::Float64=0.05, phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0))
-        _fill_phase_velocity_branches!(phase_velocity_branches, frequencies, arrival_times, measured_phases, distance, phase_branch_numbers, phvel_source_phase; phase_plausible_range=phase_plausible_range)
+    function finish_phase_velocity_picks!(phase_velocities::Vector{Float64}, phase_velocity_branches::Matrix{Float64}, measured_phases::Vector{Float64}, selected_phase_branches::Vector{Int}, phase_suspect::AbstractVector{Bool}, u_predicted_from_phase::Vector{Float64}, periods::Vector{Float64}, frequencies::Vector{Float64}, arrival_times::Vector{Float64}, distance::Float64, quality_factors::Vector{Float64}, phase_branch_numbers::Vector{Int}, phvel_source_phase::PhvelCorrection; min_anchor_quality::Float64=3.0, phase_anchor_velocity::Float64=3.3, phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5), phase_smoothness_jump::Float64=0.05, phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0))
+        phvel_vec = _phvel_correction_per_period(phvel_source_phase, periods)
+        _fill_phase_velocity_branches!(phase_velocity_branches, frequencies, arrival_times, measured_phases, distance, phase_branch_numbers, phvel_vec; phase_plausible_range=phase_plausible_range)
         return resolve_phase_velocity_cycles!(phase_velocities, selected_phase_branches, phase_suspect, u_predicted_from_phase, phase_velocity_branches, periods, quality_factors, phase_branch_numbers; min_anchor_quality=min_anchor_quality, phase_anchor_velocity=phase_anchor_velocity, phase_velocity_range=phase_velocity_range, phase_smoothness_jump=phase_smoothness_jump)
     end
     
@@ -115,7 +144,7 @@ begin
                                       frequencies::Vector{Float64},
                                       arrival_times::Vector{Float64},
                                       dist::Float64,
-                                      phvel_source_phase::Float64,
+                                      phvel_source_phase::Vector{Float64},
                                       idx_curr::Int,
                                       idx_prev::Int;
                                       phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5),
@@ -148,7 +177,7 @@ begin
         phpred_curr = omega_curr * (t_g_curr - dist / vpred_curr)
         k_curr = round(Int, (phpred_curr - phi_curr) / (2π))
 
-        denom_curr = t_g_curr - (phi_curr + 2π * k_curr + phvel_source_phase) / omega_curr
+        denom_curr = t_g_curr - (phi_curr + 2π * k_curr + phvel_source_phase[idx_curr]) / omega_curr
         if abs(denom_curr) <= 1e-6
             phase_suspect[idx_curr] = true
             return phase_velocities
@@ -178,7 +207,7 @@ begin
                                         frequencies::Vector{Float64},
                                         arrival_times::Vector{Float64},
                                         dist::Float64,
-                                        phvel_source_phase::Float64,
+                                        phvel_source_phase::Vector{Float64},
                                         sorted::Vector{Int},
                                         idx_long::Int;
                                         phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5),
@@ -205,7 +234,7 @@ begin
                                                 frequencies::Vector{Float64},
                                                 arrival_times::Vector{Float64},
                                                 distance::Float64,
-                                                phvel_source_phase::Float64;
+                                                phvel_source_phase::Vector{Float64};
                                                 phase_anchor_velocity::Float64=3.3,
                                                 phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5),
                                                 phase_smoothness_jump::Float64=0.05,
@@ -234,7 +263,7 @@ begin
             fallback=phase_anchor_velocity)
         phpred_long = omega_long * (t_g_long - dist / vpred_long)
         k_long = round(Int, (phpred_long - phi_long) / (2π))
-        denom_long = t_g_long - (phi_long + 2π * k_long + phvel_source_phase) / omega_long
+        denom_long = t_g_long - (phi_long + 2π * k_long + phvel_source_phase[idx_long]) / omega_long
         if abs(denom_long) <= 1e-6
             phase_suspect[idx_long] = true
             return phase_velocities
@@ -266,17 +295,18 @@ begin
                                                   frequencies::Vector{Float64},
                                                   arrival_times::Vector{Float64},
                                                   distance::Float64,
-                                                  phvel_source_phase::Float64;
+                                                  phvel_source_phase::PhvelCorrection;
                                                   phase_anchor_velocity::Float64=3.3,
                                                   phase_velocity_range::Tuple{Float64,Float64}=(2.5, 4.5),
                                                   phase_smoothness_jump::Float64=0.05,
                                                   phase_plausible_range::Tuple{Float64,Float64}=(0.5, 20.0),
                                                   phtovel_prior_periods=nothing,
                                                   phtovel_prior_velocities=nothing)
+        phvel_vec = _phvel_correction_per_period(phvel_source_phase, periods)
         _phtovel_unwrap_phase_to_velocity!(phase_velocities, selected_phase_branches,
                                            phase_suspect, measured_phases, periods,
                                            frequencies, arrival_times, distance,
-                                           phvel_source_phase;
+                                           phvel_vec;
                                            phase_anchor_velocity=phase_anchor_velocity,
                                            phase_velocity_range=phase_velocity_range,
                                            phase_smoothness_jump=phase_smoothness_jump,

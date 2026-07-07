@@ -76,7 +76,9 @@ Rearranging (n = 0 branch):
 - `t_group`          : group arrival time [s]
 - `freq`             : centre frequency f₀ [Hz]
 - `distance`         : source–receiver distance [km]
-- `phvel_source_phase` : source/CCF phase shift [rad], subtracted from the denominator
+- `phvel_source_phase` : source/CCF phase shift [rad], subtracted from the denominator.
+   Either a constant `Float64`, or a `Dict{<:Real,<:Real}` mapping period [s] to
+   phase [rad] that is linearly interpolated at `1/freq` (clamped at the ends).
 - `branch`             : integer cycle count N
 
 # Returns
@@ -87,8 +89,8 @@ function compute_phase_velocity(analytic_signal::AbstractVector{<:Complex},
                                 t_group::Float64,
                                 freq::Float64,
                                 distance::Float64;
-                                phvel_correction::Float64=0.0,
-                                phvel_source_phase::Float64=phvel_correction,
+                                phvel_correction::PhvelCorrection=0.0,
+                                phvel_source_phase::PhvelCorrection=phvel_correction,
                                 branch::Int=0)
     (isnan(t_group) || t_group <= 0.0) && return NaN
     dt_local = time[2] - time[1]
@@ -98,7 +100,9 @@ function compute_phase_velocity(analytic_signal::AbstractVector{<:Complex},
     phi_measured = angle(analytic_signal[i_g])
 
     omega = 2π * freq
-    denom = omega * t_group - phi_measured - phvel_source_phase + 2π * branch
+    phi_source = phvel_source_phase isa AbstractDict ?
+        _interp_phvel_correction(1.0 / freq, phvel_source_phase) : phvel_source_phase
+    denom = omega * t_group - phi_measured - phi_source + 2π * branch
     abs(denom) < 1e-6 && return NaN
 
     c = omega * distance / denom
